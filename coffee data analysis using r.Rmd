@@ -1,0 +1,547 @@
+---
+title: "Untitled"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: true
+    toc: true
+    toc_depth: 2
+header-includes:
+  - \usepackage[margin=1in]{geometry}
+---
+
+
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+getwd()
+```
+
+
+```{r}
+# Replace the path with the actual location of your file
+coffee <- read.csv("coffee_selected.csv")
+
+# Check first few rows
+head(coffee)
+
+```
+
+
+```{r}
+dim(coffee)
+```
+
+
+```{r}
+names(coffee) 
+
+```
+
+
+```{r}
+str(coffee)
+
+```
+
+
+```{r}
+summary(coffee)   
+```
+
+
+```{r}
+# Count missing values per column
+colSums(is.na(coffee))
+```
+```{r}
+# Impute quakers with 0
+coffee$quakers[is.na(coffee$quakers)] <- 0
+
+# Impute processing_method with "Unknown"
+coffee$processing_method <- as.character(coffee$processing_method)
+coffee$processing_method[is.na(coffee$processing_method)] <- "Unknown"
+coffee$processing_method <- as.factor(coffee$processing_method)
+
+# Impute altitude with median
+median_alt <- median(coffee$altitude_mean_meters, na.rm = TRUE)
+coffee$altitude_mean_meters[is.na(coffee$altitude_mean_meters)] <- median_alt
+```
+
+
+```{r}
+# Check again
+colSums(is.na(coffee))
+```
+```{r}
+sum(is.na(coffee))
+```
+
+
+```{r}
+# Check for duplicate rows
+sum(duplicated(coffee))
+```
+
+
+```{r}
+# Frequency table
+table(coffee$is_specialty)
+```
+Although the dataset is imbalanced toward specialty coffees, this does not pose an issue for regression analysis, since the target variable (total_cup_points) is continuous and all observations contribute to the model.
+
+```{r}
+# Proportions
+prop.table(table(coffee$is_specialty))
+```
+
+
+```{r}
+num_cols <- c("total_cup_points","aroma","flavor","aftertaste",
+              "acidity","body","balance","uniformity","clean_cup",
+              "category_one_defects","category_two_defects",
+              "moisture","quakers","altitude_mean_meters")
+
+summary(coffee[, num_cols])
+
+```
+
+Lets check Outliers
+```{r}
+# Function to flag outliers based on IQR
+find_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower <- Q1 - 1.5 * IQR
+  upper <- Q3 + 1.5 * IQR
+  return(which(x < lower | x > upper))
+}
+
+```
+
+Apply to Numeric Columns
+```{r}
+num_cols <- c("total_cup_points","aroma","flavor","aftertaste",
+              "acidity","body","balance","uniformity","clean_cup",
+              "category_one_defects","category_two_defects",
+              "moisture","quakers","altitude_mean_meters")
+
+outlier_list <- lapply(coffee[, num_cols], find_outliers)
+
+# Check number of outliers per variable
+sapply(outlier_list, length)
+
+
+```
+
+
+```{r}
+# Function to cap outliers at 1st and 99th percentile
+cap_outliers <- function(x){
+  qnt <- quantile(x, probs=c(0.01,0.99), na.rm=TRUE)
+  x[x < qnt[1]] <- qnt[1]
+  x[x > qnt[2]] <- qnt[2]
+  return(x)
+}
+
+# Columns to cap (mostly numeric features prone to extreme values)
+cap_cols <- c("total_cup_points","aroma","flavor","aftertaste",
+              "acidity","body","balance","uniformity","clean_cup",
+              "category_one_defects","category_two_defects",
+              "moisture","quakers","altitude_mean_meters")
+
+# Apply capping
+coffee[cap_cols] <- lapply(coffee[cap_cols], cap_outliers)
+
+# Check again for outliers
+outlier_list_capped <- lapply(coffee[, cap_cols], find_outliers)
+sapply(outlier_list_capped, length)
+
+```
+Outliers were detected using the IQR method. Extreme values in continuous variables were capped at the 1st and 99th percentiles to reduce their impact on regression. Sensory scores with naturally high or perfect values were retained, as they reflect genuine variation in coffee quality. After capping, the dataset is ready for regression analysis.
+
+
+
+
+
+
+
+A) 
+```{r}
+# Bar plot of specialty vs non-specialty
+library(ggplot2)
+
+ggplot(coffee, aes(x=is_specialty)) +
+  geom_bar(fill=c("tomato","steelblue")) +
+  labs(title="Distribution of Specialty vs Non-Specialty Coffees",
+       x="Specialty Coffee", y="Count")
+
+```
+
+Interpretation:
+
+Most coffees are specialty grade.
+
+Dataset is imbalanced toward specialty coffees.
+
+Important for understanding dataset composition
+```{r}
+# Sensory attributes
+sensory_cols <- c("aroma","flavor","aftertaste","acidity","body","balance","uniformity","clean_cup")
+
+library(reshape2)
+sensory_long <- melt(coffee[, sensory_cols])
+
+ggplot(sensory_long, aes(x=value)) +
+  geom_histogram(bins=20, fill="steelblue", color="black") +
+  facet_wrap(~variable, scales="free") +
+  labs(title="Distribution of Sensory Scores", x="Score", y="Count")
+```
+
+Interpretation:
+
+Scores mostly clustered between 7–8.
+
+uniformity and clean_cup show many perfect scores (10).
+
+Left-skewed variables indicate most coffees are high quality.
+
+
+```{r}
+
+## =========================
+## Q1(a) – Graphical Exploration
+## =========================
+# A1. Proportion of specialty by processing_method
+library(dplyr)
+library(ggplot2)
+
+library(dplyr)
+library(ggplot2)
+
+# Calculate percentage of specialty coffees per processing method
+specialty_percent <- coffee %>%
+  group_by(processing_method) %>%
+  summarise(total = n(),
+            specialty_count = sum(is_specialty),
+            percent_specialty = round((specialty_count / total) * 100, 2))
+
+# Bar plot with percentage
+ggplot(specialty_percent, aes(x=processing_method, y=percent_specialty)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  geom_text(aes(label=paste0(percent_specialty, "%")), vjust=-0.5) +  # show percentage on top
+  labs(title="Percentage of Specialty Coffees by Processing Method",
+       x="Processing Method", y="Percentage of Specialty Coffees") +
+  ylim(0, 110) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+The proportion of specialty coffees varies across processing methods. The “Pulped natural / honey” method has the highest proportion at 100%, followed by “Semi-washed / Semi-pulped” at 96.43%. The “Washed / Wet” method has the lowest proportion at 83.8%, despite having the largest number of samples. This indicates that the processing method plays a significant role in determining whether a coffee achieves specialty status.
+
+
+
+```{r}
+# A2. total_cup_points vs flavor with smooth trend
+# Scatter plots with smooth trend line
+ggplot(coffee, aes(x=flavor, y=total_cup_points)) +
+  geom_point(alpha=0.6, color="steelblue") +
+  geom_smooth(method="loess", color="red") +
+  labs(title="Total Cup Points vs Flavor", x="Flavor Score", y="Total Cup Points")
+
+
+```
+The plot shows a clear positive relationship between flavor and total cup points, with higher flavor scores generally corresponding to higher total points. Most coffees cluster in the mid-to-high range of flavor (7–8) and total cup points (80–85), reflecting the overall high quality of the dataset. The LOESS trend line indicates slight flattening at the top, suggesting that very high flavor scores do not always result in proportionally higher total cup points. Some variability around the trend is observed, highlighting that other sensory attributes, such as aroma, aftertaste, and balance, also contribute to the overall quality.
+
+
+```{r}
+# A3. Correlation matrix
+vars_corr <- dplyr::select(
+coffee,
+total_cup_points, aroma, flavor, aftertaste, acidity, body, balance
+)
+vars_corr <- tidyr::drop_na(vars_corr)
+GGally::ggpairs(
+vars_corr,
+upper = list(continuous = "cor"),
+lower = list(continuous = "points"),
+diag = list(continuous = "densityDiag")
+)
+
+
+```
+The correlation matrix indicates that all key sensory attributes, such as flavor, aroma, and aftertaste, are positively associated with overall coffee quality, highlighting their contribution to the total rating. Among them, flavor and aftertaste appear to be the strongest drivers of quality, making them particularly important for predicting scores. The matrix also shows that many attributes are interrelated, suggesting that improvements in one aspect often coincide with improvements in others. For modeling purposes, while flavor and aftertaste are valuable predictors, the strong correlations among variables mean that multicollinearity should be considered, and careful modeling approaches may be needed to ensure reliable and interpretable results.
+
+
+
+
+
+
+```{r}
+## =========================
+## Q1(b) – Model for category_one_defects
+## check poisson model if it fit or not due to overdispersion
+## =========================
+
+# Load necessary library
+library(MASS)
+
+# Round category_one_defects to integers to avoid warnings
+coffee$category_one_defects_int <- round(coffee$category_one_defects)
+
+# Fit a Poisson regression model using integer counts
+poisson_model <- glm(category_one_defects_int ~ processing_method + moisture + 
+                       altitude_mean_meters + quakers,
+                     data = coffee,
+                     family = poisson(link="log"))
+
+# Summary of the model
+summary(poisson_model)
+
+# Check for overdispersion
+dispersion <- sum(residuals(poisson_model, type = "pearson")^2) / poisson_model$df.residual
+dispersion
+
+
+```
+Since category_one_defects is a count variable, Poisson regression is a natural choice; however, the dispersion value of 3.43 indicates substantial overdispersion, violating the Poisson assumption of equal mean and variance. Negative binomial regression is more appropriate, as it handles overdispersion via an extra dispersion parameter.
+
+```{r}
+## =========================
+## Q1(b) – Model for category_one_defects
+## =========================
+library(MASS)
+
+# Fit negative binomial regression
+nb_model <- glm.nb(category_one_defects_int ~ processing_method + moisture + 
+                     altitude_mean_meters + quakers,
+                   data = coffee)
+
+# Summary of the model
+summary(nb_model)
+
+# Optional: Exponentiate coefficients to interpret as multiplicative effects
+exp(coef(nb_model))
+
+```
+The analysis shows that the processing method has the strongest influence on the number of category one defects in coffee beans. Semi-washed, Unknown, and Washed/Wet methods significantly reduce expected defects, while the Pulped Natural/Honey method shows a moderate effect. Moisture content has a marginal positive impact, indicating that higher moisture may slightly increase defects. Altitude and the number of quakers do not significantly affect defect counts. These results suggest that careful control of processing methods, along with monitoring moisture levels, is key to minimizing defects and ensuring higher coffee quality.
+
+```{r}
+## =========================
+## Q1(c) – Linear model for total_cup_points
+## =========================
+# Fit the regression model
+total_points_model <- lm(total_cup_points ~ aroma + balance + clean_cup + 
+                         flavor + moisture + altitude_mean_meters,
+                         data = coffee)
+
+# Summary of the model
+summary(total_points_model)
+
+```
+
+
+```{r}
+# Residual plots to check linearity, homoscedasticity, and normality
+par(mfrow = c(2,2))
+plot(total_points_model)
+
+```
+The regression analysis reveals that total cup points are strongly driven by sensory attributes, including flavor, clean cup, balance, and aroma, with flavor emerging as the most influential predictor. Among these, balance and aroma also contribute substantially, while environmental variables such as moisture and altitude have negligible effects. The model demonstrates an excellent fit, explaining approximately 90% of the variation in total cup points (Adjusted R² ≈ 0.897), indicating that sensory qualities are the primary determinants of coffee quality. Residuals are relatively small and symmetric, showing no major violations of linear regression assumptions and confirming that the model reliably captures the relationships in the data. Overall, these findings highlight that coffee ratings are predominantly determined by sensory characteristics, with environmental factors playing only a minor role.
+
+```{r}
+## =========================
+## Q1(d) – Alternative model (GAM) + diagnostics & comparison
+## =========================
+# Load necessary packages
+library(broom)
+library(ggplot2)
+
+# Fit the alternative linear model
+alt_model <- lm(total_cup_points ~ aroma + flavor + aftertaste + acidity + body + balance + clean_cup,
+                data = coffee)
+
+# Summarise results using broom
+tidy(alt_model)
+glance(alt_model)  # Gives overall model fit metrics
+
+```
+
+
+```{r}
+# Residual plots to check assumptions
+par(mfrow = c(2,2))
+plot(alt_model)
+
+# Optional: Standardized residuals
+library(car)
+residualPlots(alt_model)
+
+```
+
+
+```{r}
+# Compare R-squared and Adjusted R-squared
+summary(total_points_model)$r.squared # old model r square
+summary(alt_model)$r.squared #new model r square
+summary(total_points_model)$adj.r.squared #old model adjusted model
+summary(alt_model)$adj.r.squared #new model adjusted r square
+
+# Compare AIC values
+AIC(alt_model)
+AIC(lm(total_cup_points ~ aroma + balance + clean_cup + flavor + moisture + altitude_mean_meters, data = coffee))
+
+```
+The alternative regression model, which includes aroma, flavor, aftertaste, acidity, body, balance, and clean cup as predictors, explains a very high proportion of the variation in total cup points, with an R² of 0.919 and an adjusted R² of 0.919, indicating an excellent fit. All sensory variables have positive coefficients and are highly significant, confirming that higher ratings in these attributes strongly increase total cup points. Among them, clean cup, flavor, and balance have the largest effects, highlighting their critical role in overall coffee quality.
+
+Residual diagnostics show no major violations of linear regression assumptions, and the residual standard error is relatively low, suggesting accurate prediction of total cup points. Compared to the previous model in part (c), which included fewer sensory variables and weaker environmental factors, this model is clearly superior, as evidenced by higher R² and lower AIC (2872 vs. 3189). Overall, the findings reinforce that sensory attributes are the dominant determinants of coffee quality, while environmental variables like moisture and altitude contribute minimally once sensory characteristics are included. This model provides a more comprehensive and precise understanding of what drives coffee ratings.
+
+
+```{r}
+## =========================
+## Q1(e) – category_two_defects ~ moisture + processing_method
+## =========================
+#Checking over dispersion first 
+# Round the variable to nearest integer
+coffee$category_two_defects_int <- round(coffee$category_two_defects)
+
+# Fit Poisson model using integer counts
+poisson_model <- glm(category_two_defects_int ~ moisture + processing_method, 
+                     family = poisson(link = "log"), data = coffee)
+
+# Check overdispersion
+dispersion <- sum(residuals(poisson_model, type = "pearson")^2) / poisson_model$df.residual
+dispersion
+
+
+
+
+```
+A dispersion value of 6.11 is much greater than 1, which indicates strong overdispersion.
+
+This means a Negative Binomial regression is more appropriate than Poisson for modeling category_two_defects.
+
+```{r}
+
+
+# Fit negative binomial model
+nb_model <- glm.nb(category_two_defects_int ~ moisture + processing_method, data = coffee)
+
+# Summary of the model
+summary(nb_model)
+
+# Optional: Analysis of deviance to check processing_method significance
+anova(nb_model, test = "Chisq")
+
+```
+The analysis of category two defects shows that moisture is a significant factor, with higher moisture levels associated with an increased number of defects. Most processing methods have little effect after accounting for moisture, except for the Unknown category, which significantly reduces expected defects compared to the reference. The Negative Binomial model appropriately handles overdispersion in the data, ensuring reliable estimates. These findings suggest that controlling moisture is crucial for coffee quality, while variations in most processing methods have minimal impact on secondary defects. Sparse or unusual categories, like Unknown, should be interpreted cautiously due to limited sample sizes.
+
+```{r}
+## =========================
+## Q1(f) –Reflection on Modelling Strategy and Challenges
+## =========================
+```
+In this analysis, the GLM modelling strategy was tailored to the type and distribution of each response variable. Count variables, such as category one and two defects, were modelled using Poisson regression initially, but overdispersion checks indicated that a Negative Binomial model was more appropriate. For continuous outcomes like total_cup_points, linear regression provided a strong baseline, and extending the model to include additional sensory attributes improved fit and explained variance.
+
+Before modelling, null values and outliers were removed to prevent distortion of estimates and ensure robust results. Challenges included handling overdispersion, managing highly skewed and sparse data (e.g., quakers or rare processing methods), and selecting a predictor set that balanced sensory and environmental factors without introducing multicollinearity. These were addressed through diagnostics, careful model selection, and incremental building to evaluate predictor significance and model performance.
+
+Overall, the approach highlights the importance of preprocessing, choosing appropriate GLM families, and performing thorough diagnostic checks to obtain reliable, interpretable insights into coffee quality and defects
+
+
+
+
+
+## Q2(a) – Negative Binomial (2, π) Probability Mass Function
+
+For \(k = 2\), the PMF is:
+
+$$
+P(Y = y) = \binom{y+k-1}{k-1} (1-\pi)^y \pi^k, \quad y = 0, 1, 2, \dots
+$$
+
+Simplifying the binomial coefficient:
+
+$$
+\binom{y+1}{1} = y+1
+$$
+
+So the PMF becomes:
+
+$$
+P(Y = y) = (y+1) (1-\pi)^y \pi^2, \quad y = 0, 1, 2, \dots
+$$
+
+
+### Q2(b) – Exponential Family Form
+
+The negative binomial can be written in the exponential family form as:
+
+$$
+f(y; \pi) = \exp \Big[ y \log(1-\pi) + 2 \log(\pi) + \log(y+1) \Big]
+$$
+
+- The **canonical (natural) parameter** is \(\eta = \log(1-\pi)\).
+
+---
+### Q2(c) – Mean and Variance
+
+For the exponential family, the mean and variance can be derived as:
+
+$$
+\text{E}[Y] = \frac{2(1-\pi)}{\pi}, \quad
+\text{Var}[Y] = \frac{2(1-\pi)}{\pi^2}
+$$
+
+---
+
+
+
+
+
+
+
+```{r}
+### Q2(d) – Graphing the PMF in R
+
+
+library(ggplot2)
+library(dplyr)
+
+# Define function for Negbin(2, pi)
+negbin2_pmf <- function(y, pi) {
+  (y+1) * (1-pi)^y * pi^2
+}
+
+# Create data frame for plotting
+y_vals <- 0:20
+pi_vals <- c(0.1, 0.5, 0.9)
+
+plot_data <- expand.grid(y = y_vals, pi = pi_vals) %>%
+  mutate(prob = negbin2_pmf(y, pi))
+
+# Plot
+ggplot(plot_data, aes(x = y, y = prob, color = as.factor(pi))) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~pi, labeller = label_bquote(pi == .(pi))) +
+  labs(title = "Negbin(2, π) Probability Mass Function",
+       x = "Number of Failures (y)",
+       y = "Probability",
+       color = "π") +
+  theme_minimal()
+```
+
